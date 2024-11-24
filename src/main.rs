@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Char('k') | KeyCode::Enter => {
                         if let Some(proc) = processes.get(selected_index) {
                             if unsafe { kill(proc.pid, SIGKILL) } == 0 {
-                                println!("Killed process with PID {}", proc.pid);
+                                // println!("Killed process with PID {}", proc.pid);
                             } else {
                                 println!("Failed to kill process with PID {}. Check permissions.", proc.pid);
                             }
