@@ -11,8 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Row, Table},
     Terminal,
 };
-use libc::{kill, SIGKILL};
-use std::io::Write;
+use libc::{kill, SIGKILL, SIGSTOP, SIGCONT};
 
 struct Process {
     pid: i32,
@@ -105,7 +104,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .constraints(
                     [
                         Constraint::Percentage(20), // System stats
-                        Constraint::Percentage(80), // Process list
+                        Constraint::Percentage(70), // Process list
+                        Constraint::Percentage(10), // Help section
                     ]
                     .as_ref(),
                 )
@@ -113,6 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             draw_system_stats(f, chunks[0], &system_stats);
             draw_process_list(f, chunks[1], &processes, scroll_offset, selected_index);
+            draw_help_section(f, chunks[2]);
         })?;
 
         // Handle user input
@@ -123,12 +124,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         reset_terminal(terminal)?;
                         break;
                     }
-                    KeyCode::Char('k') | KeyCode::Enter => {
+                    KeyCode::Char('k') => {
                         if let Some(proc) = processes.get(selected_index) {
                             if unsafe { kill(proc.pid, SIGKILL) } == 0 {
                                 // println!("Killed process with PID {}", proc.pid);
                             } else {
                                 println!("Failed to kill process with PID {}. Check permissions.", proc.pid);
+                            }
+                        }
+                    }
+                    KeyCode::Char('s') => {
+                        if let Some(proc) = processes.get(selected_index) {
+                            if unsafe { kill(proc.pid, SIGSTOP) } == 0 {
+                                // println!("Suspended process with PID {}", proc.pid);
+                            } else {
+                                println!("Failed to suspend process with PID {}. Check permissions.", proc.pid);
+                            }
+                        }
+                    }
+                    KeyCode::Char('w') => {
+                        if let Some(proc) = processes.get(selected_index) {
+                            if unsafe { kill(proc.pid, SIGCONT) } == 0 {
+                                // println!("Resumed process with PID {}", proc.pid);
+                            } else {
+                                println!("Failed to resume process with PID {}. Check permissions.", proc.pid);
                             }
                         }
                     }
@@ -224,22 +243,19 @@ fn draw_process_list(
     f.render_widget(table, area);
 }
 
-
-fn prompt_kill_process() -> Result<(), Box<dyn std::error::Error>> {
-    // Prompt user for PID
-    print!("Enter PID to kill: ");
-    std::io::stdout().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    if let Ok(pid) = input.trim().parse::<i32>() {
-        if unsafe { kill(pid, SIGKILL) } == 0 {
-            println!("Killed process with PID {}", pid);
-        } else {
-            println!("Failed to kill process with PID {}. Check permissions.", pid);
-        }
-    }
-    Ok(())
+fn draw_help_section(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+    let help_text = "q: Quit  k: Kill  s: Suspend  w: Resume  ↑/↓: Navigate";
+    let block = Block::default().title("Help").borders(Borders::ALL);
+    let paragraph = Paragraph::new(help_text).block(block).style(
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(paragraph, area);
 }
+
+// Helper functions like uptime, calculate_cpu_usage, etc., remain unchanged
+
 
 fn uptime(btime: &u64) -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
