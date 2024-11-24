@@ -13,9 +13,18 @@ use ratatui::{
 };
 use libc::{kill, SIGKILL, SIGSTOP, SIGCONT};
 
+#[derive(PartialEq, Eq)]
+enum SortCriteria {
+    CPU,
+    Memory,
+    PID,
+}
+
 struct Process {
     pid: i32,
+    ppid: i32,
     user: String,
+    threads: i64,
     priority: i64,
     nice: i64,
     virt: f64,
@@ -37,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut scroll_offset = 0;
     let mut selected_index = 0; // Tracks the currently selected process
+    let mut sort_criteria = SortCriteria::CPU; // Default sorting by CPU usage
 
     loop {
         // Collect system and process data
@@ -78,7 +88,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         processes.push(Process {
                             pid: stat.pid,
+                            ppid: stat.ppid,
                             user,
+                            threads: stat.num_threads,
                             priority,
                             nice,
                             virt,
@@ -94,8 +106,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Sort by CPU usage in descending order
-        processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
+        // Sort processes based on the current sorting criteria
+        match sort_criteria {
+            SortCriteria::CPU => {
+                processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
+            }
+            SortCriteria::Memory => {
+                processes.sort_by(|a, b| b.mem_usage.partial_cmp(&a.mem_usage).unwrap());
+            }
+            SortCriteria::PID => {
+                processes.sort_by(|a, b| a.pid.cmp(&b.pid));
+            }
+        }
 
         // Draw the TUI
         terminal.draw(|f| {
@@ -104,8 +126,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .constraints(
                     [
                         Constraint::Percentage(20), // System stats
-                        Constraint::Percentage(70), // Process list
-                        Constraint::Percentage(10), // Help section
+                        Constraint::Percentage(60), // Process list (shortened)
+                        Constraint::Percentage(20), // Help section
                     ]
                     .as_ref(),
                 )
@@ -113,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             draw_system_stats(f, chunks[0], &system_stats);
             draw_process_list(f, chunks[1], &processes, scroll_offset, selected_index);
-            draw_help_section(f, chunks[2]);
+            draw_help_section(f, chunks[2], &sort_criteria);
         })?;
 
         // Handle user input
@@ -151,6 +173,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    KeyCode::Char('c') => {
+                        sort_criteria = SortCriteria::CPU;
+                    }
+                    KeyCode::Char('m') => {
+                        sort_criteria = SortCriteria::Memory;
+                    }
+                    KeyCode::Char('p') => {
+                        sort_criteria = SortCriteria::PID;
+                    }
                     KeyCode::Down => {
                         if selected_index < processes.len() - 1 {
                             selected_index += 1;
@@ -176,28 +207,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>, Box<dyn std::error::Error>> {
-    crossterm::terminal::enable_raw_mode()?;
-    let stdout = std::io::stdout();
-    let backend = CrosstermBackend::new(stdout);
-    let terminal = Terminal::new(backend)?;
-    Ok(terminal)
-}
-
-fn reset_terminal<B: Backend>(mut terminal: Terminal<B>) -> Result<(), Box<dyn std::error::Error>> {
-    // Clear the terminal before exiting
-    print!("\x1B[2J\x1B[H");
-    crossterm::terminal::disable_raw_mode()?;
-    terminal.show_cursor()?;
-    Ok(())
-}
-
-fn draw_system_stats(f: &mut ratatui::Frame, area: ratatui::layout::Rect, stats: &String) {
-    let block = Block::default().title("System Stats").borders(Borders::ALL);
-    let paragraph = Paragraph::new(stats.clone()).block(block);
-    f.render_widget(paragraph, area);
-}
-
 fn draw_process_list(
     f: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
@@ -218,9 +227,12 @@ fn draw_process_list(
             };
             Row::new(vec![
                 p.pid.to_string(),
+                p.ppid.to_string(),
                 p.user.clone(),
+                p.threads.to_string(),
                 format!("{:.1}", p.cpu_usage),
                 format!("{:.1} MB", p.mem_usage),
+                p.time_plus.clone(),
                 p.command.clone(),
             ])
             .style(style)
@@ -230,21 +242,32 @@ fn draw_process_list(
     let table = Table::new(
         rows,
         [
-            Constraint::Length(6),
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Length(10),
-            Constraint::Min(20),
+            Constraint::Length(6),   // PID
+            Constraint::Length(6),   // PPID
+            Constraint::Length(10),  // User
+            Constraint::Length(8),   // Threads
+            Constraint::Length(8),   // CPU
+            Constraint::Length(10),  // Memory
+            Constraint::Length(12),  // Time+
+            Constraint::Min(20),     // Command
         ],
     )
-    .header(Row::new(vec!["PID", "USER", "%CPU", "MEMORY", "COMMAND"]))
+    .header(Row::new(vec!["PID", "PPID", "USER", "THR", "%CPU", "MEM", "TIME+", "COMMAND"]))
     .block(Block::default().title("Processes").borders(Borders::ALL));
 
     f.render_widget(table, area);
 }
 
-fn draw_help_section(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
-    let help_text = "q: Quit  k: Kill  s: Suspend  w: Resume  ↑/↓: Navigate";
+fn draw_help_section(f: &mut ratatui::Frame, area: ratatui::layout::Rect, sort_criteria: &SortCriteria) {
+    let sort_label = match sort_criteria {
+        SortCriteria::CPU => "Sorting by: CPU",
+        SortCriteria::Memory => "Sorting by: Memory",
+        SortCriteria::PID => "Sorting by: PID",
+    };
+    let help_text = format!(
+        "{}\nKeys: q: Quit  k: Kill  s: Suspend  w: Resume  c: CPU  m: Memory  p: PID  ↑/↓: Navigate",
+        sort_label
+    );
     let block = Block::default().title("Help").borders(Borders::ALL);
     let paragraph = Paragraph::new(help_text).block(block).style(
         Style::default()
@@ -254,8 +277,28 @@ fn draw_help_section(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
     f.render_widget(paragraph, area);
 }
 
+fn draw_system_stats(f: &mut ratatui::Frame, area: ratatui::layout::Rect, stats: &String) {
+    let block = Block::default().title("System Stats").borders(Borders::ALL);
+    let paragraph = Paragraph::new(stats.clone()).block(block);
+    f.render_widget(paragraph, area);
+}
 // Helper functions like uptime, calculate_cpu_usage, etc., remain unchanged
 
+fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>, Box<dyn std::error::Error>> {
+    crossterm::terminal::enable_raw_mode()?;
+    let stdout = std::io::stdout();
+    let backend = CrosstermBackend::new(stdout);
+    let terminal = Terminal::new(backend)?;
+    Ok(terminal)
+}
+
+fn reset_terminal<B: Backend>(mut terminal: Terminal<B>) -> Result<(), Box<dyn std::error::Error>> {
+    // Clear the terminal before exiting
+    print!("\x1B[2J\x1B[H");
+    crossterm::terminal::disable_raw_mode()?;
+    terminal.show_cursor()?;
+    Ok(())
+}
 
 fn uptime(btime: &u64) -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
