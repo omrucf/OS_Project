@@ -45,6 +45,7 @@ struct Process {
     mem_usage: f64,
     time_plus: String,
     command: String,
+    children: HashMap<i32, Process>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -110,10 +111,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             mem_usage,
                             time_plus,
                             command: stat.comm,
+                            children: HashMap::new(),
                         };
 
                         process_map.insert(proc.pid, proc);
                     }
+                }
+            }
+        }
+
+        let mut children_map: HashMap<i32, Vec<Process>> = HashMap::new();
+        for process in process_map.values() {
+            children_map.entry(process.ppid).or_default().push(process.clone());
+        }
+
+        for process in process_map.values_mut() {
+            if let Some(children) = children_map.remove(&process.pid) {
+                for child in children {
+                    process.children.insert(child.pid, child);
                 }
             }
         }
@@ -329,48 +344,51 @@ fn draw_process_tree(
     // Find the selected process
     if let Some(proc) = process_map.get(&pid) {
         content.push_str(&format!("Process: {} ({})\n", proc.pid, proc.command));
+
+        content.push_str("\nParents:\n");
+        let mut current_pid = Some(proc.ppid);
+        let mut level = 0;
+        while let Some(ppid) = current_pid {
+            if let Some(parent) = process_map.get(&ppid) {
+                content.push_str(&format!(
+                    "{}- {} ({})\n",
+                    "  ".repeat(level),
+                    parent.pid,
+                    parent.command
+                ));
+                current_pid = Some(parent.ppid);
+                level += 1;
+            } else {
+                break;
+            }
+        }
+
+        content.push_str("\nChildren:\n");
+        append_children_recursive(&mut content, &proc.children, 0);
     } else {
         content.push_str("Process: N/A\n");
-        let block = Block::default()
-            .title("Process Tree")
-            .borders(Borders::ALL);
-        let paragraph = Paragraph::new(content).block(block);
-        f.render_widget(paragraph, area);
-        return;
     }
 
-    // Fetch parent hierarchy
-    content.push_str("\nParents:\n");
-    let mut current_pid = process_map.get(&pid).map(|p| p.ppid);
-    let mut level = 0;
-    while let Some(ppid) = current_pid {
-        if let Some(parent) = process_map.get(&ppid) {
-            content.push_str(&format!(
-                "{}- {} ({})\n",
-                "  ".repeat(level),
-                parent.pid,
-                parent.command
-            ));
-            current_pid = Some(parent.ppid);
-            level += 1;
-        } else {
-            break;
-        }
-    }
-
-    // Fetch children
-    content.push_str("\nChildren:\n");
-    for child in process_map.values().filter(|p| p.ppid == pid) {
-        content.push_str(&format!("  - {} ({})\n", child.pid, child.command));
-    }
-
-    // Render the tree view
     let block = Block::default()
         .title(format!("Process Tree for PID {}", pid))
         .borders(Borders::ALL);
     let paragraph = Paragraph::new(content).block(block);
     f.render_widget(paragraph, area);
 }
+
+// Recursive helper function to append children
+fn append_children_recursive(content: &mut String, children: &HashMap<i32, Process>, level: usize) {
+    for child in children.values() {
+        content.push_str(&format!(
+            "{}- {} ({})\n",
+            "  ".repeat(level),
+            child.pid,
+            child.command
+        ));
+        append_children_recursive(content, &child.children, level + 1);
+    }
+}
+
 
 
 fn draw_empty_tree_view(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
