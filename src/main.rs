@@ -1,6 +1,6 @@
 use procfs::process::all_processes;
-use procfs::{process::Stat};
-use users::{get_user_by_uid};
+use procfs::process::Stat;
+use users::get_user_by_uid;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use chrono::Local;
 use crossterm::event::{self, Event, KeyCode};
@@ -18,18 +18,16 @@ enum SortCriteria {
     CPU,
     Memory,
     PID,
+    PR,
 }
 
 struct Process {
     pid: i32,
     ppid: i32,
     user: String,
+    state: char,
     threads: i64,
     priority: i64,
-    nice: i64,
-    virt: f64,
-    res: f64,
-    shr: f64,
     cpu_usage: f64,
     mem_usage: f64,
     time_plus: String,
@@ -60,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let used_mem_mb = total_mem_mb - free_mem_mb - buffers_mb - cached_mb;
 
         let system_stats = format!(
-            "top - {}  up {} seconds,  load average: {:.2}, {:.2}, {:.2}\n\
+            "this - {}  up {} seconds,  load average: {:.2}, {:.2}, {:.2}\n\
             MiB Mem : {:>8.1} total, {:>8.1} used, {:>8.1} free, {:>8.1} buff/cache",
             Local::now().format("%H:%M:%S"),
             uptime,
@@ -81,21 +79,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let time_plus = format_time(stat.utime + stat.stime);
                         let user = get_user(status.ruid);
                         let priority = stat.priority;
-                        let nice = stat.nice;
-                        let virt = stat.vsize as f64 / 1024.0; // Virtual memory in KB
-                        let res = calculate_res_memory(&stat);
-                        let shr = calculate_shr_memory(&stat);
+                        
 
                         processes.push(Process {
                             pid: stat.pid,
                             ppid: stat.ppid,
                             user,
+                            state: stat.state,
                             threads: stat.num_threads,
                             priority,
-                            nice,
-                            virt,
-                            res,
-                            shr,
                             cpu_usage,
                             mem_usage,
                             time_plus,
@@ -116,6 +108,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             SortCriteria::PID => {
                 processes.sort_by(|a, b| a.pid.cmp(&b.pid));
+            }
+            SortCriteria::PR => {
+                processes.sort_by(|a, b| b.priority.cmp(&a.priority));
             }
         }
 
@@ -182,6 +177,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Char('p') => {
                         sort_criteria = SortCriteria::PID;
                     }
+                    KeyCode::Char('r') => {
+                        sort_criteria = SortCriteria::PR;
+                    }
                     KeyCode::Down => {
                         if selected_index < processes.len() - 1 {
                             selected_index += 1;
@@ -229,7 +227,9 @@ fn draw_process_list(
                 p.pid.to_string(),
                 p.ppid.to_string(),
                 p.user.clone(),
+                p.state.to_string(),
                 p.threads.to_string(),
+                p.priority.to_string(),
                 format!("{:.1}", p.cpu_usage),
                 format!("{:.1} MB", p.mem_usage),
                 p.time_plus.clone(),
@@ -245,14 +245,16 @@ fn draw_process_list(
             Constraint::Length(6),   // PID
             Constraint::Length(6),   // PPID
             Constraint::Length(10),  // User
+            Constraint::Length(4),   // State
             Constraint::Length(8),   // Threads
+            Constraint::Length(6),   // Priority
             Constraint::Length(8),   // CPU
             Constraint::Length(10),  // Memory
             Constraint::Length(12),  // Time+
             Constraint::Min(20),     // Command
         ],
     )
-    .header(Row::new(vec!["PID", "PPID", "USER", "THR", "%CPU", "MEM", "TIME+", "COMMAND"]))
+    .header(Row::new(vec!["PID", "PPID", "USER", "ST", "THR", "PR", "%CPU", "MEM", "TIME+", "COMMAND"]))
     .block(Block::default().title("Processes").borders(Borders::ALL));
 
     f.render_widget(table, area);
@@ -263,9 +265,10 @@ fn draw_help_section(f: &mut ratatui::Frame, area: ratatui::layout::Rect, sort_c
         SortCriteria::CPU => "Sorting by: CPU",
         SortCriteria::Memory => "Sorting by: Memory",
         SortCriteria::PID => "Sorting by: PID",
+        SortCriteria::PR => "Sorting by: Priority",
     };
     let help_text = format!(
-        "{}\nKeys: q: Quit  k: Kill  s: Suspend  w: Resume  c: CPU  m: Memory  p: PID  ↑/↓: Navigate",
+        "{}\nKeys: q: Quit  k: Kill  s: Suspend  w: Resume  c: CPU  m: Memory  p: PID   r: Priority  ↑/↓: Navigate",
         sort_label
     );
     let block = Block::default().title("Help").borders(Borders::ALL);
@@ -323,14 +326,6 @@ fn calculate_memory_usage(stat: &Stat) -> f64 {
     (stat.rss as f64 * page_size_kb) / 1024.0
 }
 
-fn calculate_res_memory(stat: &Stat) -> f64 {
-    let page_size_kb = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as f64 } / 1024.0;
-    stat.rss as f64 * page_size_kb
-}
-
-fn calculate_shr_memory(stat: &Stat) -> f64 {
-    calculate_res_memory(stat) / 2.0
-}
 
 fn format_time(clock_ticks: u64) -> String {
     let seconds = clock_ticks as f64 / procfs::ticks_per_second().unwrap_or(100) as f64;
