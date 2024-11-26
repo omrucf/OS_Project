@@ -263,7 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if view_state == ViewState::Processes {
                             if selected_index < processes.len() - 1 {
                                 selected_index += 1;
-                                if selected_index >= scroll_offset + 10 {
+                                if selected_index >= scroll_offset + 20 {
                                     scroll_offset += 1;
                                 }
                             }
@@ -416,7 +416,7 @@ fn draw_help_section(
         ViewState::ProcessTree => "View: Process Tree",
     };
     let help_text = format!(
-        "{}\n{}\nKeys: q: Quit  k: Kill s: Suspend  w: Wake  ←/→: Switch View  ↑/↓: Navigate    Sort by: c: CPU  m: Memory  p: PID  r: Priority",
+        "{}\n{}\nKeys: q: Quit  t: Show tree  k: Kill s: Suspend  w: Wake  ←/→: Switch View  ↑/↓: Navigate    Sort by: c: CPU  m: Memory  p: PID  r: Priority",
         sort_label, view_label
     );
     let block = Block::default().title("Help").borders(Borders::ALL);
@@ -437,7 +437,7 @@ fn draw_process_list(
     let rows: Vec<Row> = processes
         .iter()
         .skip(scroll_offset)
-        .take(10)
+        .take(20)
         .enumerate()
         .map(|(i, p)| {
             let style = if scroll_offset + i == selected_index {
