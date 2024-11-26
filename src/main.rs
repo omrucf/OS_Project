@@ -14,6 +14,8 @@ use ratatui::{
 };
 use libc::{kill, SIGKILL, SIGSTOP, SIGCONT};
 use std::process::Command;
+use std::fs::File;
+use std::io::{self, BufRead};
 
 
 
@@ -78,16 +80,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let crash_history = get_crash_logs();
 
+        let (rx_bytes, tx_bytes) = get_network_usage();
+        let cpu_speeds = get_cpu_speeds();
+        let (read_bytes, write_bytes) = get_disk_stats();
+
+        let network_usage = format!("Network: RX {} KB, TX {} KB", rx_bytes / 1024, tx_bytes / 1024);
+        let cpu_speed_str = cpu_speeds
+            .chunks(10)
+            .enumerate()
+            .map(|(chunk_index, chunk)| {
+                chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(i, speed)| format!("CPU {}: {:.1} MHz", chunk_index * 10 + i + 1, speed))
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+
+        let disk_usage = format!("Disk: Read {} MB, Write {} MB", read_bytes / (1024 * 1024), write_bytes / (1024 * 1024));
+
         let system_stats = format!(
             "this - {}  up {} seconds,  load average: {:.2}, {:.2}, {:.2}\n\
-            MiB Mem : {:>8.1} total, {:>8.1} used, {:>8.1} free, {:>8.1} buff/cache",
+            MiB Mem : {:>8.1} total, {:>8.1} used, {:>8.1} free, {:>8.1} buff/cache\n\
+            {}\n{}\n{}",
             Local::now().format("%H:%M:%S"),
             uptime,
             load_avg.one,
             load_avg.five,
             load_avg.fifteen,
-            total_mem_mb, used_mem_mb, free_mem_mb, buffers_mb + cached_mb
+            total_mem_mb, used_mem_mb, free_mem_mb, buffers_mb + cached_mb,
+            network_usage,
+            cpu_speed_str,
+            disk_usage
         );
+
 
         let mut process_map: HashMap<i32, Process> = HashMap::new();
         for process in all_processes()? {
@@ -308,6 +337,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Network stats
+fn get_network_usage() -> (u64, u64) {
+    let file = File::open("/proc/net/dev").expect("Failed to open /proc/net/dev");
+    let reader = io::BufReader::new(file);
+
+    let mut total_rx = 0;
+    let mut total_tx = 0;
+
+    for line in reader.lines().skip(2) {
+        if let Ok(line) = line {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() > 9 {
+                total_rx += fields[1].parse::<u64>().unwrap_or(0);
+                total_tx += fields[9].parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+
+    (total_rx, total_tx)
+}
+
+// CPU speeds
+fn get_cpu_speeds() -> Vec<f64> {
+    let file = File::open("/proc/cpuinfo").expect("Failed to open /proc/cpuinfo");
+    let reader = io::BufReader::new(file);
+
+    let mut speeds = vec![];
+
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            if line.starts_with("cpu MHz") {
+                if let Some(value) = line.split(':').nth(1) {
+                    speeds.push(value.trim().parse::<f64>().unwrap_or(0.0));
+                }
+            }
+        }
+    }
+
+    speeds
+}
+
+// Disk read/write stats
+fn get_disk_stats() -> (u64, u64) {
+    let file = File::open("/proc/diskstats").expect("Failed to open /proc/diskstats");
+    let reader = io::BufReader::new(file);
+
+    let mut total_read = 0;
+    let mut total_write = 0;
+
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() > 13 {
+                total_read += fields[5].parse::<u64>().unwrap_or(0) * 512; // Sectors to bytes
+                total_write += fields[9].parse::<u64>().unwrap_or(0) * 512;
+            }
+        }
+    }
+
+    (total_read, total_write)
+}
+
+fn draw_system_stats(f: &mut ratatui::Frame, area: ratatui::layout::Rect, stats: &String) {
+    let block = Block::default().title("System Stats").borders(Borders::ALL);
+    let paragraph = Paragraph::new(stats.clone()).block(block);
+    f.render_widget(paragraph, area);
+}
+
 
 fn get_crash_logs() -> Vec<String> {
     // Run `dmesg` and capture the output
@@ -482,11 +579,11 @@ fn draw_process_list(
     f.render_widget(table, area);
 }
 
-fn draw_system_stats(f: &mut ratatui::Frame, area: ratatui::layout::Rect, stats: &String) {
-    let block = Block::default().title("System Stats").borders(Borders::ALL);
-    let paragraph = Paragraph::new(stats.clone()).block(block);
-    f.render_widget(paragraph, area);
-}
+// fn draw_system_stats(f: &mut ratatui::Frame, area: ratatui::layout::Rect, stats: &String) {
+//     let block = Block::default().title("System Stats").borders(Borders::ALL);
+//     let paragraph = Paragraph::new(stats.clone()).block(block);
+//     f.render_widget(paragraph, area);
+// }
 // Helper functions like uptime, calculate_cpu_usage, etc., remain unchanged
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>, Box<dyn std::error::Error>> {
